@@ -1,5 +1,3 @@
-
-
 ### Notes:
 
 face_landmarks_list is a list of all the faces, which in turn have the landmarks
@@ -7,15 +5,11 @@ face_landmarks_list is a list of all the faces, which in turn have the landmarks
 class Blendshapes(enum.IntEnum):
   """The 52 blendshape coefficients."""
 
-  NEUTRAL = 0
   BROW_DOWN_LEFT = 1
   BROW_DOWN_RIGHT = 2
   BROW_INNER_UP = 3
   BROW_OUTER_UP_LEFT = 4
   BROW_OUTER_UP_RIGHT = 5
-  CHEEK_PUFF = 6
-  CHEEK_SQUINT_LEFT = 7
-  CHEEK_SQUINT_RIGHT = 8
   EYE_BLINK_LEFT = 9
   EYE_BLINK_RIGHT = 10
   EYE_LOOK_DOWN_LEFT = 11
