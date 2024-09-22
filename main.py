@@ -40,6 +40,14 @@ class Blendshapes(enum.IntEnum):
   EYE_WIDE_LEFT = 21
   EYE_WIDE_RIGHT = 22
 
+
+Getting Blendshape results: detection_result.face_blendshapes -> list[list[Category(index=0, score=2.0494850616614713e-07, display_name='', category_name='_neutral')]
+- category_name will vary, and is in camelcase but like above. e.g.: eyeBlinkRight
+- What does the score, represent?
+	- Definition: Face blendshapes are numerical values that represent the intensity of various facial expressions or muscle movements.
+	- Purpose: They are used to describe and quantify facial expressions, allowing for detailed analysis or recreation of facial movements.
+	- Output: The MediaPipe Face Landmarker task can output 52 different blendshape scores for each detected face.
+	- Range: Each blendshape score is typically a float value between 0.0 and 1.0, where 0.0 means the expression is not present, and 1.0 means it's fully expressed.
 '''
 
 def draw_landmarks_on_image(rgb_image, detection_result):
