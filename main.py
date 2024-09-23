@@ -17,6 +17,9 @@ import pickle as pkl
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
 def draw_landmarks_on_image(rgb_image, detection_result):
   face_landmarks_list = detection_result.face_landmarks
@@ -56,15 +59,10 @@ def draw_landmarks_on_image(rgb_image, detection_result):
 
   return annotated_image
 
-
 # Get the screen size
 screen_width, screen_height = pyautogui.size()
 top_left = (0, 0)
 bottom_right = (screen_width - 1, screen_height - 1)
-
-# Print the screen coordinates
-print(f"Top-left coordinate: {top_left}")
-print(f"Bottom-right coordinate: {bottom_right}")
 
 # Create an FaceLandmarker object.
 base_options = python.BaseOptions(model_asset_path='face_landmarker.task')
@@ -117,17 +115,23 @@ def create_dataset():
 
       # Extract face blendshapes and mouse position
       if detection_result.face_blendshapes:
-          row = {}
           face_landmarks = detection_result.face_landmarks[0]
-          for i, landmark in enumerate(face_landmarks):
-            row[f'landmark_{i}_x'] = landmark.x
-            row[f'landmark_{i}_y'] = landmark.y
-            row[f'landmark_{i}_z'] = landmark.z
+          left_eye_flattened = [384, 385, 386, 387, 388, 390, 263, 398, 276, 282, 283, 285, 293, 295, 296, 300, 334, 336, 466, 474, 475, 476, 477, 362, 373, 374, 249, 380, 381, 382]
+          right_eye_flattened = [133, 7, 144, 145, 153, 154, 155, 157, 158, 159, 160, 33, 161, 163, 173, 46, 52, 53, 55, 63, 65, 66, 70, 469, 470, 471, 472, 105, 107, 246]
+          left_eye_landmarks = [face_landmarks[i] for i in left_eye_flattened]
+          right_eye_landmarks = [face_landmarks[i] for i in right_eye_flattened]
 
-          face_blendshapes = detection_result.face_blendshapes[0]
-          for category in face_blendshapes:
-              if category.category_name in ['browDownLeft', 'browDownRight', 'browInnerUp', 'browOuterUpLeft', 'browOuterUpRight', 'eyeBlinkLeft', 'eyeBlinkRight', 'eyeLookDownLeft', 'eyeLookDownRight', 'eyeLookInLeft', 'eyeLookInRight', 'eyeLookOutLeft', 'eyeLookOutRight', 'eyeLookUpLeft', 'eyeLookUpRight', 'eyeSquintLeft', 'eyeSquintRight', 'eyeWideLeft', 'eyeWideRight']:
-                  row[category.category_name] = category.score
+          left_eye_frame, right_eye_frame = extract_eyes(cv2_image, left_eye_landmarks, right_eye_landmarks)
+
+          # Convert eye frames to grayscale
+          left_eye_frame_gray = cv2.cvtColor(left_eye_frame, cv2.COLOR_RGB2GRAY)
+          right_eye_frame_gray = cv2.cvtColor(right_eye_frame, cv2.COLOR_RGB2GRAY)
+
+          # Stack left eye on top of right
+          eye_frames = np.vstack((left_eye_frame_gray, right_eye_frame_gray))
+
+          row = {}
+          row['eye_frames'] = eye_frames
           row['mouseX'] = mouse_x
           row['mouseY'] = mouse_y
           dataset.append(row)
@@ -138,6 +142,28 @@ def create_dataset():
       pkl.dump(dataset, f)
 
   plot_mouse_distribution(dataset)
+  return None
+
+
+def extract_eyes(frame, left_eye_landmarks, right_eye_landmarks):
+    eye_frames = []
+    
+    for eye_landmarks in [left_eye_landmarks, right_eye_landmarks]:
+        # Get the eye region bounding box
+        min_x = int(min(eye_landmarks, key=lambda x: x.x).x * frame.shape[1])
+        max_x = int(max(eye_landmarks, key=lambda x: x.x).x * frame.shape[1])
+        min_y = int(min(eye_landmarks, key=lambda x: x.y).y * frame.shape[0])
+        max_y = int(max(eye_landmarks, key=lambda x: x.y).y * frame.shape[0])
+        
+        # Crop the eye region from the frame
+        eye_frame = frame[min_y:max_y, min_x:max_x]
+        
+        # Resize the eye frame to a fixed size
+        eye_frame = cv2.resize(eye_frame, (100, 60))
+        
+        eye_frames.append(eye_frame)
+
+    return eye_frames
 
 def plot_mouse_distribution(dataset):
     mouse_x = [row['mouseX'] for row in dataset]
@@ -160,14 +186,31 @@ def plot_mouse_distribution(dataset):
     plt.savefig('mouse_distribution.png')
     plt.show()
 
+class EyeTrackingModel(nn.Module):
+    def __init__(self):
+        super(EyeTrackingModel, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
+        self.relu1 = nn.ReLU()
+        self.pool1 = nn.MaxPool2d(kernel_size=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.relu2 = nn.ReLU()
+        self.pool2 = nn.MaxPool2d(kernel_size=2)
+        self.fc1 = nn.Linear(64 * 25 * 30, 128)
+        self.relu3 = nn.ReLU()
+        self.fc2 = nn.Linear(128, 2)
 
-
-landmark_ids = set([263, 249, 249, 390, 390, 373, 373, 374, 374, 380, 380, 381, 381, 382, 382, 362, 263, 466, 466, 388, 388, 387, 387, 386, 386, 385, 385, 384, 384, 398, 398, 362, 276, 283, 283, 282, 282, 295, 295, 285, 300, 293, 293, 334, 334, 296, 296, 336, 474, 475, 475, 476, 476, 477, 477, 474, 33, 7, 7, 163, 163, 144, 144, 145, 145, 153, 153, 154, 154, 155, 155, 133, 33, 246, 246, 161, 161, 160, 160, 159, 159, 158, 158, 157, 157, 173, 173, 133, 46, 53, 53, 52, 52, 65, 65, 55, 70, 63, 63, 105, 105, 66, 66, 107, 469, 470, 470, 471, 471, 472, 472, 469])
-#landmark_ids = range(478)
-
-LANDMARK_FEATURES = [f'landmark_{i}_{a}' for i in landmark_ids for a in 'xyz']
-BLENDSHAPE_FEATURES = ['browDownLeft', 'browDownRight', 'browInnerUp', 'browOuterUpLeft', 'browOuterUpRight', 'eyeBlinkLeft', 'eyeBlinkRight', 'eyeLookDownLeft', 'eyeLookDownRight', 'eyeLookInLeft', 'eyeLookInRight', 'eyeLookOutLeft', 'eyeLookOutRight', 'eyeLookUpLeft', 'eyeLookUpRight', 'eyeSquintLeft', 'eyeSquintRight', 'eyeWideLeft', 'eyeWideRight']
-FEATURES = LANDMARK_FEATURES + BLENDSHAPE_FEATURES
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.relu1(x)
+        x = self.pool1(x)
+        x = self.conv2(x)
+        x = self.relu2(x)
+        x = self.pool2(x)
+        x = x.view(-1, 64 * 30 * 25)
+        x = self.fc1(x)
+        x = self.relu3(x)
+        x = self.fc2(x)
+        return x
 
 def train_model():
     with open('dataset.pkl', 'rb') as f:
@@ -179,12 +222,12 @@ def train_model():
     X = []
     y = []
     for data in dataset[::1]:
-        features = [data[feature] for feature in FEATURES]
+        features = data['eye_frames']
         X.append(features)
         y.append([data['mouseX'], data['mouseY']])
 
-    X = np.array(X)
-    y = np.array(y)
+    X = np.array(X, dtype=np.float32) / 255
+    y = np.array(y, dtype=np.float32)
 
     # Normalize mouseX and mouseY using top-left and bottom-right coordinates
     y[:, 0] = (y[:, 0] - top_left[0]) / (bottom_right[0] - top_left[0])
@@ -193,36 +236,48 @@ def train_model():
     # Split the dataset into training and testing sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Scale the features using StandardScaler
-    feat_scaler = StandardScaler()
-    X_train = feat_scaler.fit_transform(X_train)
-    X_test = feat_scaler.transform(X_test)
+    # Convert data to PyTorch tensors
+    X_train = torch.from_numpy(X_train).unsqueeze(1)
+    X_test = torch.from_numpy(X_test).unsqueeze(1)
+    y_train = torch.from_numpy(y_train)
+    y_test = torch.from_numpy(y_test)
 
-    # Train the Ridge regression model
-    model = Ridge(alpha=1.0)
-    model.fit(X_train, y_train)
+    # Create the model, loss function, and optimizer
+    model = EyeTrackingModel()
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    # Train the model
+    num_epochs = 10
+    batch_size = 32
+    for epoch in range(num_epochs):
+        for i in range(0, len(X_train), batch_size):
+            batch_X = X_train[i:i+batch_size]
+            batch_y = y_train[i:i+batch_size]
+
+            optimizer.zero_grad()
+            outputs = model(batch_X)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
+
+        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}")
 
     # Evaluate the model and print results
-    y_pred = model.predict(X_test)
-    mse = np.mean((y_pred - y_test) ** 2)
-    print(f"Mean Squared Error: {mse:.4f}")
+    with torch.no_grad():
+        outputs = model(X_test)
+        mse = criterion(outputs, y_test)
+        print(f"Mean Squared Error: {mse:.4f}")
 
-    # Save the model and scaler
-    with open('ridge_model.pkl', 'wb') as f:
-        pkl.dump(model, f)
-    with open('scaler.pkl', 'wb') as f:
-        pkl.dump(feat_scaler, f)
-
+    # Save the model
+    torch.save(model.state_dict(), 'eye_tracking_model.pth')
 
 def infer():
     pyautogui.FAILSAFE = False
-    # Load the model, scaler, and config
-    with open('ridge_model.pkl', 'rb') as f:
-        model = pkl.load(f)
-    with open('scaler.pkl', 'rb') as f:
-        feat_scaler = pkl.load(f)
-    with open('config.json', 'r') as f:
-        config = json.load(f)
+    # Load the model
+    model = EyeTrackingModel()
+    model.load_state_dict(torch.load('eye_tracking_model.pth'))
+    model.eval()
 
     # Start inference
     cap = cv2.VideoCapture(2)
@@ -237,23 +292,30 @@ def infer():
         detection_result = detector.detect(image)
 
         if detection_result.face_blendshapes:
-            features = {}
             face_landmarks = detection_result.face_landmarks[0]
-            for i, landmark in enumerate(face_landmarks):
-              features[f'landmark_{i}_x'] = landmark.x
-              features[f'landmark_{i}_y'] = landmark.y
-              features[f'landmark_{i}_z'] = landmark.z
+            left_eye_flattened = [384, 385, 386, 387, 388, 390, 263, 398, 276, 282, 283, 285, 293, 295, 296, 300, 334, 336, 466, 474, 475, 476, 477, 362, 373, 374, 249, 380, 381, 382]
+            right_eye_flattened = [133, 7, 144, 145, 153, 154, 155, 157, 158, 159, 160, 33, 161, 163, 173, 46, 52, 53, 55, 63, 65, 66, 70, 469, 470, 471, 472, 105, 107, 246]
+            left_eye_landmarks = [face_landmarks[i] for i in left_eye_flattened]
+            right_eye_landmarks = [face_landmarks[i] for i in right_eye_flattened]
 
-            face_blendshapes = detection_result.face_blendshapes[0]
-            features.update({category.category_name: category.score for category in face_blendshapes if category.category_name in FEATURES})
-            features = [features[k] for k in FEATURES]
-            features = np.array(features).reshape(1, -1)
-            features = feat_scaler.transform(features)
+            left_eye_frame, right_eye_frame = extract_eyes(cv2_image, left_eye_landmarks, right_eye_landmarks)
 
-            prediction = model.predict(features)
+            # Convert eye frames to grayscale
+            left_eye_frame_gray = cv2.cvtColor(left_eye_frame, cv2.COLOR_RGB2GRAY)
+            right_eye_frame_gray = cv2.cvtColor(right_eye_frame, cv2.COLOR_RGB2GRAY)
 
-            mouse_x = prediction[0][0]
-            mouse_y = prediction[0][1]
+            # Stack left eye on top of right
+            eye_frames = np.vstack((left_eye_frame_gray, right_eye_frame_gray)) / 255
+
+            # Convert eye frames to PyTorch tensor
+            eye_frames_tensor = torch.from_numpy(eye_frames).float().unsqueeze(0).unsqueeze(0)
+
+            # Get the predicted coordinates
+            with torch.no_grad():
+                prediction = model(eye_frames_tensor)
+
+            mouse_x = prediction[0][0].item()
+            mouse_y = prediction[0][1].item()
 
             # Denormalize the predicted coordinates
             mouse_x = mouse_x * (bottom_right[0] - top_left[0]) + top_left[0]
@@ -277,60 +339,7 @@ def infer():
     cap.release()
     cv2.destroyAllWindows()
 
-
-'''
 if __name__ == '__main__':
-  create_dataset()
-  train_model()
+  #create_dataset()
+  #train_model()
   infer()
-
-'''
-
-# write me a function that uses the media pipe to get the landmarks, and uses those landmarks to crop out left eye and right eye from the frame and save it on disk, for just a single frame
-def extract_eyes(frame, left_eye_landmarks, right_eye_landmarks):
-    eye_frames = []
-    
-    for eye_landmarks in [left_eye_landmarks, right_eye_landmarks]:
-        # Get the eye region bounding box
-        min_x = int(min(eye_landmarks, key=lambda x: x.x).x * frame.shape[1])
-        max_x = int(max(eye_landmarks, key=lambda x: x.x).x * frame.shape[1])
-        min_y = int(min(eye_landmarks, key=lambda x: x.y).y * frame.shape[0])
-        max_y = int(max(eye_landmarks, key=lambda x: x.y).y * frame.shape[0])
-        
-        # Crop the eye region from the frame
-        eye_frame = frame[min_y:max_y, min_x:max_x]
-        
-        eye_frames.append(eye_frame)
-
-    return eye_frames
-
-def save_eyes_to_disk(left_eye_frame, right_eye_frame):
-    cv2.imwrite("left_eye.jpg", cv2.cvtColor(left_eye_frame, cv2.COLOR_RGB2BGR))
-    cv2.imwrite("right_eye.jpg", cv2.cvtColor(right_eye_frame, cv2.COLOR_RGB2BGR))
-
-def extract_eyes_and_save_to_disk(frame, detection_result):
-    face_landmarks = detection_result.face_landmarks[0]
-
-    left_eye_flattened = [384, 385, 386, 387, 388, 390, 263, 398, 276, 282, 283, 285, 293, 295, 296, 300, 334, 336, 466, 474, 475, 476, 477, 362, 373, 374, 249, 380, 381, 382]
-    right_eye_flattened = [133, 7, 144, 145, 153, 154, 155, 157, 158, 159, 160, 33, 161, 163, 173, 46, 52, 53, 55, 63, 65, 66, 70, 469, 470, 471, 472, 105, 107, 246]
-    left_eye_landmarks = [face_landmarks[i] for i in left_eye_flattened]
-    right_eye_landmarks = [face_landmarks[i] for i in right_eye_flattened]
-
-    #left_eye_landmarks = [face_landmarks[i] for i in range(33, 133)]
-    #right_eye_landmarks = [face_landmarks[i] for i in range(133, 233)]
-
-    left_eye_frame, right_eye_frame = extract_eyes(frame, left_eye_landmarks, right_eye_landmarks)
-
-    save_eyes_to_disk(left_eye_frame, right_eye_frame)
-
-
-# Let the first few frames be warmup and discard them
-for _ in range(5):
-    success, cv2_image = cap.read()
-
-success, cv2_image = cap.read()
-cv2.imwrite('frame.jpg', cv2_image)
-cv2_image = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2RGB)
-image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.asarray(cv2_image))
-detection_result = detector.detect(image)
-extract_eyes_and_save_to_disk(cv2_image, detection_result)
