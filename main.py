@@ -1,3 +1,4 @@
+'''
 import argparse
 import cv2
 import random
@@ -407,21 +408,70 @@ if __name__ == '__main__':
     main()
 
 
+
+
+Rewrite the above entirely to use index finger to move mouse. Do not train or anything. Use the index finger position relative to the frame and map it to screen
+
+Here's the rewritten code that uses the index finger position to move the mouse, without any training or eye tracking:
+
 '''
+import cv2
+import mediapipe as mp
+import numpy as np
+import pyautogui
 
-Explain the exponential moving average here:
-The exponential moving average (EMA) is a type of moving average that places a greater weight and significance on the most recent data points. The EMA is calculated by applying a weighting factor \( \alpha \) to the most recent observation and \( 1 - \alpha \) to the previous EMA. This makes the EMA more responsive to recent changes compared to a simple moving average.
+# Initialize MediaPipe Hands
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
-In the context of the code, the EMA is used to smooth the predicted mouse position to prevent abrupt movements. The formula used is:
+# Get the screen size
+screen_width, screen_height = pyautogui.size()
 
-\[ \text{avg\_mouse\_x} = \alpha \times \text{mouse\_x} + (1 - \alpha) \times \text{avg\_mouse\_x} \]
+def map_to_screen(x: float, y: float) -> tuple[int, int]:
+    return (int(x * screen_width), int(y * screen_height))
 
-\[ \text{avg\_mouse\_y} = \alpha \times \text{mouse\_y} + (1 - \alpha) \times \text{avg\_mouse\_y} \]
+def detect_index_thumb_touch(landmarks: list) -> bool:
+    thumb_tip = landmarks[4]
+    index_tip = landmarks[8]
+    distance = ((thumb_tip.x - index_tip.x)**2 + (thumb_tip.y - index_tip.y)**2 + (thumb_tip.z - index_tip.z)**2)**0.5
+    return distance < 0.05
 
-Where:
-- \( \alpha = \frac{2}{\text{N} + 1} \) is the smoothing factor, with \( \text{N} \) being the number of timesteps over which to average.
-- \(\text{mouse\_x}\) and \(\text{mouse\_y}\) are the current predicted mouse positions.
-- \(\text{avg\_mouse\_x}\) and \(\text{avg\_mouse\_y}\) are the smoothed mouse positions.
-  
-The choice of \( \alpha \) affects the responsiveness of the EMA. A smaller \( \alpha \) results in a smoother, less responsive average, while a larger \( \alpha \) makes the average more responsive to recent changes. Here, \(\alpha\) is set to smooth the predictions over approximately 30 timesteps.
-'''
+def main():
+  cap = cv2.VideoCapture(2)
+  pyautogui.FAILSAFE = False
+
+  while cap.isOpened():
+    try:
+      success, image = cap.read()
+      if not success:
+          continue
+
+      image = cv2.flip(image, 1)
+      image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+      results = hands.process(image_rgb)
+
+      if results.multi_hand_landmarks:
+          for hand_landmarks in results.multi_hand_landmarks:
+              index_finger_tip = hand_landmarks.landmark[8]
+              
+              # Map index finger tip position to screen coordinates
+              mouse_x, mouse_y = map_to_screen(index_finger_tip.x, index_finger_tip.y)
+              
+              # Move mouse
+              pyautogui.moveTo(mouse_x, mouse_y)
+
+              # Detect click
+              if detect_index_thumb_touch(hand_landmarks.landmark):
+                  pyautogui.click()
+      if cv2.waitKey(5) & 0xFF == 27:  # Press 'ESC' to exit
+          break
+    except KeyboardInterrupt:
+      break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == '__main__':
+    main()
+
+
