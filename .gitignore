@@ -1,0 +1,7 @@
+__pycache__
+*.swp
+*.swo
+scratchpad
+dataset.pkl
+mouse_distribution.png
+eye_tracking_model.pth

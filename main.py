@@ -1,3 +1,4 @@
+import argparse
 import cv2
 import random
 import mediapipe as mp
@@ -73,14 +74,15 @@ options = vision.FaceLandmarkerOptions(base_options=base_options,
 detector = vision.FaceLandmarker.create_from_options(options)
 
 # Capture video from webcam
-cap = cv2.VideoCapture(2)
 
 def create_dataset():
+  print('Creating Dataset ...')
   fps = 30
   prev_frame_time = 0
   new_frame_time = 0
 
   dataset = []
+  cap = cv2.VideoCapture(2)
 
   while cap.isOpened():
       success, cv2_image = cap.read()
@@ -213,6 +215,7 @@ class EyeTrackingModel(nn.Module):
         return x
 
 def train_model():
+    print('Training Model ...')
     with open('dataset.pkl', 'rb') as f:
         dataset = pkl.load(f)
     random.shuffle(dataset)
@@ -272,74 +275,153 @@ def train_model():
     # Save the model
     torch.save(model.state_dict(), 'eye_tracking_model.pth')
 
-def infer():
-    pyautogui.FAILSAFE = False
-    # Load the model
-    model = EyeTrackingModel()
-    model.load_state_dict(torch.load('eye_tracking_model.pth'))
-    model.eval()
 
-    # Start inference
-    cap = cv2.VideoCapture(2)
-    while cap.isOpened():
-        success, cv2_image = cap.read()
-        if not success:
-            print("Ignoring empty camera frame.")
-            continue
+def predict_mouse_pos(cv2_image, detection_result, model, alpha, avg_mouse_x, avg_mouse_y) -> tuple[float, float]:
+  if detection_result.face_blendshapes:
+    face_landmarks: List[mp.NormalizedLandmark] = detection_result.face_landmarks[0]
+    left_eye_flattened: List[int] = [384, 385, 386, 387, 388, 390, 263, 398, 276, 282, 283, 285, 293, 295, 296, 300, 334, 336, 466, 474, 475, 476, 477, 362, 373, 374, 249, 380, 381, 382]
+    right_eye_flattened: List[int] = [133, 7, 144, 145, 153, 154, 155, 157, 158, 159, 160, 33, 161, 163, 173, 46, 52, 53, 55, 63, 65, 66, 70, 469, 470, 471, 472, 105, 107, 246]
+    left_eye_landmarks: List[mp.NormalizedLandmark] = [face_landmarks[i] for i in left_eye_flattened]
+    right_eye_landmarks: List[mp.NormalizedLandmark] = [face_landmarks[i] for i in right_eye_flattened]
 
-        cv2_image = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2RGB)
-        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.asarray(cv2_image))
-        detection_result = detector.detect(image)
+    left_eye_frame: np.ndarray
+    right_eye_frame: np.ndarray
+    left_eye_frame, right_eye_frame = extract_eyes(cv2_image, left_eye_landmarks, right_eye_landmarks)
 
-        if detection_result.face_blendshapes:
-            face_landmarks = detection_result.face_landmarks[0]
-            left_eye_flattened = [384, 385, 386, 387, 388, 390, 263, 398, 276, 282, 283, 285, 293, 295, 296, 300, 334, 336, 466, 474, 475, 476, 477, 362, 373, 374, 249, 380, 381, 382]
-            right_eye_flattened = [133, 7, 144, 145, 153, 154, 155, 157, 158, 159, 160, 33, 161, 163, 173, 46, 52, 53, 55, 63, 65, 66, 70, 469, 470, 471, 472, 105, 107, 246]
-            left_eye_landmarks = [face_landmarks[i] for i in left_eye_flattened]
-            right_eye_landmarks = [face_landmarks[i] for i in right_eye_flattened]
+    left_eye_frame_gray: np.ndarray = cv2.cvtColor(left_eye_frame, cv2.COLOR_RGB2GRAY)
+    right_eye_frame_gray: np.ndarray = cv2.cvtColor(right_eye_frame, cv2.COLOR_RGB2GRAY)
 
-            left_eye_frame, right_eye_frame = extract_eyes(cv2_image, left_eye_landmarks, right_eye_landmarks)
+    eye_frames: np.ndarray = np.vstack((left_eye_frame_gray, right_eye_frame_gray)) / 255
 
-            # Convert eye frames to grayscale
-            left_eye_frame_gray = cv2.cvtColor(left_eye_frame, cv2.COLOR_RGB2GRAY)
-            right_eye_frame_gray = cv2.cvtColor(right_eye_frame, cv2.COLOR_RGB2GRAY)
+    eye_frames_tensor: torch.Tensor = torch.from_numpy(eye_frames).float().unsqueeze(0).unsqueeze(0)
 
-            # Stack left eye on top of right
-            eye_frames = np.vstack((left_eye_frame_gray, right_eye_frame_gray)) / 255
+    with torch.no_grad():
+        prediction: torch.Tensor = model(eye_frames_tensor)
 
-            # Convert eye frames to PyTorch tensor
-            eye_frames_tensor = torch.from_numpy(eye_frames).float().unsqueeze(0).unsqueeze(0)
+    predicted_x: float = prediction[0][0].item()
+    predicted_y: float = prediction[0][1].item()
 
-            # Get the predicted coordinates
-            with torch.no_grad():
-                prediction = model(eye_frames_tensor)
+    mouse_x: float = predicted_x * (bottom_right[0] - top_left[0]) + top_left[0]
+    mouse_y: float = predicted_y * (bottom_right[1] - top_left[1]) + top_left[1]
 
-            mouse_x = prediction[0][0].item()
-            mouse_y = prediction[0][1].item()
+    avg_mouse_x = alpha * mouse_x + (1 - alpha) * avg_mouse_x
+    avg_mouse_y = alpha * mouse_y + (1 - alpha) * avg_mouse_y
 
-            # Denormalize the predicted coordinates
-            mouse_x = mouse_x * (bottom_right[0] - top_left[0]) + top_left[0]
-            mouse_y = mouse_y * (bottom_right[1] - top_left[1]) + top_left[1]
-            print('Mouse X:', mouse_x, '| Mouse Y:', mouse_y)
+    #print('Mouse X:', avg_mouse_x, '| Mouse Y:', avg_mouse_y)
+  return avg_mouse_x, avg_mouse_y
 
-            # Move the mouse to the predicted coordinates
-            pyautogui.moveTo(mouse_x, mouse_y)
 
-        # show camera window with facelandmarks
-        annotated_image = draw_landmarks_on_image(image.numpy_view(), detection_result)
-        annotated_image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
-        height = 200
-        width = int(annotated_image.shape[1] * height / annotated_image.shape[0])
-        resized_image = cv2.resize(annotated_image, (width, height))
-        cv2.imshow('Face Landmarks', resized_image)
 
-        if cv2.waitKey(1) & 0xFF == 27:  # Press 'ESC' to exit
-            break
 
-    cap.release()
-    cv2.destroyAllWindows()
+def detect_index_thumb_touch(hand_landmarks: list) -> bool | None:
+  if len(hand_landmarks) > 0:
+    thumb_tip: mp.framework.formats.landmark_pb2.NormalizedLandmark = hand_landmarks[4]
+    index_tip: mp.framework.formats.landmark_pb2.NormalizedLandmark = hand_landmarks[8]
+    distance: float = ((thumb_tip.x - index_tip.x)**2 + (thumb_tip.y - index_tip.y)**2 + (thumb_tip.z - index_tip.z)**2)**0.5
+    return distance < 0.05
+  return None
+
+def predict_left_click(image, hand_detector) -> bool | None:
+  detection_result: vision.HandLandmarkerResult = hand_detector.detect(image)
+  for hand_landmarks in detection_result.hand_landmarks:
+      return detect_index_thumb_touch(hand_landmarks)
+
+def infer(face_detector, hand_detector):
+  print('Tracking your gaze ...')
+  pyautogui.FAILSAFE = False
+  model: EyeTrackingModel = EyeTrackingModel()
+  model.load_state_dict(torch.load('eye_tracking_model.pth'))
+  model.eval()
+
+  cap: cv2.VideoCapture = cv2.VideoCapture(2)
+  
+  avg_mouse_x: float = 0
+  avg_mouse_y: float = 0
+  alpha: float = 2 / (10 + 1)
+
+  still_clicked = False
+
+  while cap.isOpened():
+    try:
+      success: bool
+      cv2_image: np.ndarray
+      success, cv2_image = cap.read()
+      if not success: continue
+
+      cv2_image = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2RGB)
+      image: mp.Image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.asarray(cv2_image))
+      face_detection_result: mp.FaceDetection = face_detector.detect(image)
+      avg_mouse_x, avg_mouse_y = predict_mouse_pos(cv2_image, face_detection_result, model, alpha, avg_mouse_x, avg_mouse_y)
+      pyautogui.moveTo(avg_mouse_x, avg_mouse_y)  #TODO: uncomment this
+
+      clicked = predict_left_click(image, hand_detector)
+      if clicked is not None:
+        if clicked:
+          if not still_clicked: print('Clicked')
+          still_clicked = True
+        else:
+          still_clicked = False
+
+      if still_clicked: pyautogui.mouseDown(button='left')
+      else: pyautogui.mouseUp(button='left')
+      print('Mouse button down?:', still_clicked)
+    except KeyboardInterrupt:
+      break
+
+  cap.release()
+  cv2.destroyAllWindows()
+  print('Now you control the mouse')
+
+hand_options: vision.HandLandmarkerOptions = vision.HandLandmarkerOptions(
+    base_options=python.BaseOptions(model_asset_path='hand_landmarker.task'),
+    num_hands=2
+)
+hand_detector: vision.HandLandmarker = vision.HandLandmarker.create_from_options(hand_options)
+
+
+def main():
+  parser = argparse.ArgumentParser(description="Eye tracking and mouse control program")
+  parser.add_argument("--recalibrate", action="store_true", help="Recalibrate the model by creating a new dataset and training")
+  args = parser.parse_args()
+  if args.recalibrate:
+    print('We are going to track your eyes according to your mouse. So move your mouse around the screen and keep looking at it.')
+    print('Press ESC to stop tracking')
+    print('We will start in 5 secs ...')
+    for i in range(5):
+      time.sleep(1)
+      print(4-i)
+
+    print('Started')
+    create_dataset()
+    train_model()
+
+  do_exit = False
+  while not do_exit:
+      infer(detector, hand_detector)
+      if input('Do you want to exit? y/[n]: ').lower() == 'y':
+          do_exit = True
+
+
 
 if __name__ == '__main__':
-  #create_dataset()
-  #train_model()
-  infer()
+    main()
+
+
+'''
+
+Explain the exponential moving average here:
+The exponential moving average (EMA) is a type of moving average that places a greater weight and significance on the most recent data points. The EMA is calculated by applying a weighting factor \( \alpha \) to the most recent observation and \( 1 - \alpha \) to the previous EMA. This makes the EMA more responsive to recent changes compared to a simple moving average.
+
+In the context of the code, the EMA is used to smooth the predicted mouse position to prevent abrupt movements. The formula used is:
+
+\[ \text{avg\_mouse\_x} = \alpha \times \text{mouse\_x} + (1 - \alpha) \times \text{avg\_mouse\_x} \]
+
+\[ \text{avg\_mouse\_y} = \alpha \times \text{mouse\_y} + (1 - \alpha) \times \text{avg\_mouse\_y} \]
+
+Where:
+- \( \alpha = \frac{2}{\text{N} + 1} \) is the smoothing factor, with \( \text{N} \) being the number of timesteps over which to average.
+- \(\text{mouse\_x}\) and \(\text{mouse\_y}\) are the current predicted mouse positions.
+- \(\text{avg\_mouse\_x}\) and \(\text{avg\_mouse\_y}\) are the smoothed mouse positions.
+  
+The choice of \( \alpha \) affects the responsiveness of the EMA. A smaller \( \alpha \) results in a smoother, less responsive average, while a larger \( \alpha \) makes the average more responsive to recent changes. Here, \(\alpha\) is set to smooth the predictions over approximately 30 timesteps.
+'''
