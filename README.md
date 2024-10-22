@@ -1,6 +1,6 @@
 ## Video Demo
 
-![Video Demo](readme_assets/output.mp4)
+https://github.com/user-attachments/assets/51c73857-4b3d-4112-b51d-2dab16bcf766
 
 
 
