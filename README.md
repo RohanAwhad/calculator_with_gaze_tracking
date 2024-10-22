@@ -1,3 +1,9 @@
+## Video Demo
+
+![Video Demo](readme_assets/output.mp4)
+
+
+
 ### Notes:
 
 face_landmarks_list is a list of all the faces, which in turn have the landmarks
